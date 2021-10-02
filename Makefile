@@ -154,7 +154,7 @@ UPROGS=\
 	$U/_test\
 	$U/_primes\
 	$U/_find\
-	$U/_findTest\
+	$U/_xargs\
 
 
 
