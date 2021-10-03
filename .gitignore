@@ -20,4 +20,4 @@ myapi.key
 xv6.out*
 .vagrant/
 submissions/
-vscode/
+.vscode/

@@ -144,6 +144,9 @@ getcmd(char *buf, int nbuf)
 int
 main(void)
 {
+
+  printf("%d\n", getpid());
+
   static char buf[100];
   int fd;
 
