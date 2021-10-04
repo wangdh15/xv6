@@ -131,7 +131,7 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
+
   pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
@@ -341,7 +341,7 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("uvmclear");
@@ -439,4 +439,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+// 递归输出
+static
+void
+vmprint_recur(pagetable_t pagetable, int dep) {
+  int i, j;
+  for (i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V)) {
+
+      // 格式
+      for (j = 0; j < dep; ++j) {
+        printf("..");
+        if (j != dep - 1) printf(" ");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+
+      // 表明不是叶子节点，继续递归
+      if (dep < 3) {
+        uint64 child = PTE2PA(pte);
+        vmprint_recur((pagetable_t)child, dep + 1);
+      }
+    }
+  }
+}
+
+// 打印一个进程的pagetable的内容
+void
+vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_recur(pagetable, 1);
 }
