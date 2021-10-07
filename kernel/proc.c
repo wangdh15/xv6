@@ -21,16 +21,17 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+extern pagetable_t kernel_pagetable;
+
 // initialize the proc table at boot time.
 void
 procinit(void)
 {
   struct proc *p;
-  
+
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
       // Allocate a page for the process's kernel stack.
       // Map it high in memory, followed by an invalid
       // guard page.
@@ -38,7 +39,7 @@ procinit(void)
       if(pa == 0)
         panic("kalloc");
       uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+      kvmmap(kernel_pagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
       p->kstack = va;
   }
   kvminithart();
@@ -76,7 +77,7 @@ myproc(void) {
 int
 allocpid() {
   int pid;
-  
+
   acquire(&pid_lock);
   pid = nextpid;
   nextpid = nextpid + 1;
@@ -121,6 +122,13 @@ found:
     return 0;
   }
 
+  // An new kernel page table.
+  if ((p->kernel_page_table = proc_kernel_pagetable(p)) == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
   // Set up new context to start executing at forkret,
   // which returns to user space.
   memset(&p->context, 0, sizeof(p->context));
@@ -136,12 +144,22 @@ found:
 static void
 freeproc(struct proc *p)
 {
+
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+
+  p->kstack = 0;
+
+  // 释放内核页表的内容，由于除了内核栈之外,
+  // 所以进程的内核地址空间都是相同的，所以叶子节点不能够释放
+  if (p->kernel_page_table)
+    proc_free_kernel_pagetable(p->kernel_page_table, 1);
+  p->kernel_page_table = 0;
+
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -185,6 +203,29 @@ proc_pagetable(struct proc *p)
   return pagetable;
 }
 
+// 构造一个进程的内核页表。
+// 其中包含内核的映射部分以及内核栈的映射。
+pagetable_t
+proc_kernel_pagetable(struct proc* p) {
+
+  // An new kernel page table.
+  pagetable_t ret;
+  if ((ret = proc_kernel_pagetable_create()) == 0) {
+    return 0;
+  }
+
+  // copy map for the kernel stack of this proc.
+  uint64 va = KSTACK((int) (p - proc));
+  pte_t  *old, *new;
+  old = walk(kernel_pagetable, va, 0);
+  new = walk(ret, va, 1);
+  *new = *old;
+
+  p->kstack = va;
+
+  return ret;
+}
+
 // Free a process's page table, and free the
 // physical memory it refers to.
 void
@@ -193,6 +234,26 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
+}
+
+// 释放每个进程的kernel pagetable
+void
+proc_free_kernel_pagetable(pagetable_t pagetable, int level) {
+
+    // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V){
+      // 不释放物理内存
+      if (level < 3) {
+        // this PTE points to a lower-level page table.
+        uint64 child = PTE2PA(pte);
+        proc_free_kernel_pagetable((pagetable_t)child, level + 1);
+      }
+      pagetable[i] = 0;
+    }
+  }
+  kfree((void*)pagetable);
 }
 
 // a user program that calls exec("/init")
@@ -215,7 +276,7 @@ userinit(void)
 
   p = allocproc();
   initproc = p;
-  
+
   // allocate one user page and copy init's instructions
   // and data into it.
   uvminit(p->pagetable, initcode, sizeof(initcode));
@@ -273,7 +334,10 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+
   np->sz = p->sz;
+
+  // copy_map_relation(p->kernel_page_table, np->kernel_page_table, p->sz);
 
   np->parent = p;
 
@@ -369,7 +433,7 @@ exit(int status)
   acquire(&p->lock);
   struct proc *original_parent = p->parent;
   release(&p->lock);
-  
+
   // we need the parent's lock in order to wake it up from wait().
   // the parent-then-child rule says we have to lock it first.
   acquire(&original_parent->lock);
@@ -440,7 +504,7 @@ wait(uint64 addr)
       release(&p->lock);
       return -1;
     }
-    
+
     // Wait for a child to exit.
     sleep(p, &p->lock);  //DOC: wait-sleep
   }
@@ -458,12 +522,10 @@ scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-  
   c->proc = 0;
   for(;;){
     // Avoid deadlock by ensuring that devices can interrupt.
     intr_on();
-    
     int found = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
@@ -473,10 +535,17 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+
+        // 切换为新进程的kernel pagetable.
+        w_satp(MAKE_SATP(p->kernel_page_table));
+        sfence_vma();
+
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
+        // 切换回kernel pagetable.
+        kvminithart();
         c->proc = 0;
 
         found = 1;
@@ -559,7 +628,7 @@ void
 sleep(void *chan, struct spinlock *lk)
 {
   struct proc *p = myproc();
-  
+
   // Must acquire p->lock in order to
   // change p->state and then call sched.
   // Once we hold p->lock, we can be
