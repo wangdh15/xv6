@@ -40,7 +40,7 @@ proc_kernel_pagetable_create() {
   kvmmap(proc_kernel_pagetabe, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
 
   // CLINT
-  kvmmap(proc_kernel_pagetabe, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+  // kvmmap(proc_kernel_pagetabe, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
 
   // PLIC
   kvmmap(proc_kernel_pagetabe, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
@@ -60,16 +60,38 @@ proc_kernel_pagetable_create() {
 }
 
 
+void
+test_compare(pagetable_t a, pagetable_t b, uint64 sz) {
+
+  // uint64 en = PGROUNDUP(sz);
+  // uint64 i;
+  // pte_t *pte1, *pte2;
+  // for (i = 0; i < en; i += PGSIZE) {
+
+  //   if ((pte1 = walk(a, i, 0)) == 0)
+  //     panic("compare fail1");
+  //   if ((pte2 = walk(b, i, 0)) == 0)
+  //     panic("compare fail2");
+
+  //   if (PTE2PA(*pte1) != PTE2PA(*pte2))
+  //     panic("compare fail3");
+
+  // }
+  // return;
+  return;
+}
+
 // 将old页表的内容复制到new页表中，
 // 也就是两个页表对应一样的映射关系，
 // 但并不分配新的内存页
 void
-copy_map_relation(pagetable_t old, pagetable_t new, uint64 sz) {
+copy_map_relation(pagetable_t old, pagetable_t new, uint64 from, uint64 end) {
 
   pte_t *pte, *pte_new;
   uint64 i;
+  uint64 be = PGROUNDUP(from), en = PGROUNDUP(end);
 
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = be; i < en; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("copy_map_relation: pte should exist");
     if((*pte & PTE_V) == 0)
@@ -77,13 +99,36 @@ copy_map_relation(pagetable_t old, pagetable_t new, uint64 sz) {
 
     if ((pte_new = walk(new, i, 1)) == 0)
       panic("copy_map_relation: pte of new should exist!");
-    if ((*pte & PTE_V))
+    if ((*pte_new & PTE_V))
       panic("copy_map relation: pte of new should not present");
 
     *pte_new = *pte;
-    *pte_new |= ~PTE_U;
+    *pte_new &= ~PTE_U;
   }
   return;
+}
+
+// 将pagetable的虚拟地址的from到end部分的内容清除映射。
+void
+clear_map_relation(pagetable_t pagetable, uint64 from, uint64 end) {
+
+  uint64 a, last;
+  pte_t *pte;
+
+  a = PGROUNDUP(from);
+  last = PGROUNDUP(end);
+
+  while (a < last){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      panic("clear_map_relation: no map");
+    if((*pte & PTE_V) == 0)
+      panic("clear_map_relation: double free");
+    *pte = 0;
+    a += PGSIZE;
+    // if(a == last)
+    //   break;
+  }
+  return ;
 }
 
 /*
@@ -450,23 +495,24 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-  uint64 n, va0, pa0;
+  // uint64 n, va0, pa0;
 
-  while(len > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > len)
-      n = len;
-    memmove(dst, (void *)(pa0 + (srcva - va0)), n);
+  // while(len > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > len)
+  //     n = len;
+  //   memmove(dst, (void *)(pa0 + (srcva - va0)), n);
 
-    len -= n;
-    dst += n;
-    srcva = va0 + PGSIZE;
-  }
-  return 0;
+  //   len -= n;
+  //   dst += n;
+  //   srcva = va0 + PGSIZE;
+  // }
+  // return 0;
+  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -476,40 +522,41 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-  uint64 n, va0, pa0;
-  int got_null = 0;
+  // uint64 n, va0, pa0;
+  // int got_null = 0;
 
-  while(got_null == 0 && max > 0){
-    va0 = PGROUNDDOWN(srcva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    n = PGSIZE - (srcva - va0);
-    if(n > max)
-      n = max;
+  // while(got_null == 0 && max > 0){
+  //   va0 = PGROUNDDOWN(srcva);
+  //   pa0 = walkaddr(pagetable, va0);
+  //   if(pa0 == 0)
+  //     return -1;
+  //   n = PGSIZE - (srcva - va0);
+  //   if(n > max)
+  //     n = max;
 
-    char *p = (char *) (pa0 + (srcva - va0));
-    while(n > 0){
-      if(*p == '\0'){
-        *dst = '\0';
-        got_null = 1;
-        break;
-      } else {
-        *dst = *p;
-      }
-      --n;
-      --max;
-      p++;
-      dst++;
-    }
+  //   char *p = (char *) (pa0 + (srcva - va0));
+  //   while(n > 0){
+  //     if(*p == '\0'){
+  //       *dst = '\0';
+  //       got_null = 1;
+  //       break;
+  //     } else {
+  //       *dst = *p;
+  //     }
+  //     --n;
+  //     --max;
+  //     p++;
+  //     dst++;
+  //   }
 
-    srcva = va0 + PGSIZE;
-  }
-  if(got_null){
-    return 0;
-  } else {
-    return -1;
-  }
+  //   srcva = va0 + PGSIZE;
+  // }
+  // if(got_null){
+  //   return 0;
+  // } else {
+  //   return -1;
+  // }
+  return copyinstr_new(pagetable, dst, srcva, max);
 }
 
 // 递归输出

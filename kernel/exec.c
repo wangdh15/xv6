@@ -116,7 +116,16 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
-  // pagetable_t new_kernel_pagetable = proc_kernel_pagetable();
+  // 切换到新的kernel pagetable.
+  // 清楚旧的用户空间的映射，增加新的用户空间的映射
+  clear_map_relation(p->kernel_page_table, 0, oldsz);
+  copy_map_relation(p->pagetable, p->kernel_page_table, 0, p->sz);
+
+  test_compare(p->pagetable, p->kernel_page_table, p->sz);
+
+  // 刷新TLB，告知页表被修改了。
+  w_satp(MAKE_SATP(p->kernel_page_table));
+  sfence_vma();
 
   if (p->pid == 1) {
     vmprint(p->pagetable);

@@ -286,6 +286,10 @@ userinit(void)
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
+  copy_map_relation(p->pagetable, p->kernel_page_table, 0, p->sz);
+
+  test_compare(p->pagetable, p->kernel_page_table, p->sz);
+
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -299,17 +303,27 @@ userinit(void)
 int
 growproc(int n)
 {
-  uint sz;
+  uint oldsz, sz;
   struct proc *p = myproc();
+  oldsz = p->sz;
 
   sz = p->sz;
+  if ((n > 0 && p->sz + n > PLIC) || (n < 0 && -n > p->sz)) return -1;
   if(n > 0){
     if((sz = uvmalloc(p->pagetable, sz, sz + n)) == 0) {
       return -1;
     }
+    copy_map_relation(p->pagetable, p->kernel_page_table, oldsz, sz);
+
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
+    clear_map_relation(p->kernel_page_table, sz, oldsz);
   }
+
+  // 刷新TLB，告知页表被修改了。
+  w_satp(MAKE_SATP(p->kernel_page_table));
+  sfence_vma();
+
   p->sz = sz;
   return 0;
 }
@@ -337,7 +351,8 @@ fork(void)
 
   np->sz = p->sz;
 
-  // copy_map_relation(p->kernel_page_table, np->kernel_page_table, p->sz);
+  copy_map_relation(np->pagetable, np->kernel_page_table, 0, np->sz);
+  test_compare(np->pagetable, np->kernel_page_table, np->sz);
 
   np->parent = p;
 
