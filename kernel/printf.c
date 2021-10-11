@@ -14,6 +14,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "proc.h"
+#include "memlayout.h"
 
 volatile int panicked = 0;
 
@@ -121,6 +122,7 @@ panic(char *s)
   printf("panic: ");
   printf(s);
   printf("\n");
+  backtrace();
   panicked = 1; // freeze uart output from other CPUs
   for(;;)
     ;
@@ -131,4 +133,23 @@ printfinit(void)
 {
   initlock(&pr.lock, "pr");
   pr.locking = 1;
+}
+
+// 打印当前的调用栈的返回地址
+void
+backtrace() {
+
+  printf("backtrace:\n");
+  uint64 cur_fp, ret_addr;
+  struct proc* p = myproc();
+  uint64 stack_top = p->kstack + PGSIZE;
+  cur_fp = r_fp();
+  ret_addr = *(uint64*)(cur_fp - 8);
+  // 最上面的一个C存储的fp是该进程的栈顶，也就是退出的条件
+  while (cur_fp != stack_top) {
+    printf("%p\n", ret_addr);
+    cur_fp = *(uint64*)(cur_fp - 16);  // 拿到上一个栈的tp
+    ret_addr = *(uint64*)(cur_fp - 8);  // 拿到上一个栈的返回地址
+  }
+  return;
 }
