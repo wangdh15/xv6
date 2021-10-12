@@ -393,7 +393,7 @@ sys_chdir(void)
   char path[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
-  
+
   begin_op();
   if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
     end_op();
@@ -482,5 +482,28 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_sigalarm(void) {
+  int period;
+  uint64 period_fn;
+
+  if (argint(0, &period) < 0 || argaddr(1, &period_fn) < 0) return -1;
+  struct proc *p = myproc();
+  p->period = period;
+  p->periodic_fn = period_fn;
+  return 0;
+}
+
+uint64
+sys_sigreturn(void) {
+  struct proc *p = myproc();
+  if (!p->is_do_periodfn)
+    panic("sys_sigreturn: period function should is running!");
+  p->is_do_periodfn = 0;
+  p->cur_time = 0;
+  memmove(p->trapframe, p->trapframe_back, PGSIZE);
   return 0;
 }
