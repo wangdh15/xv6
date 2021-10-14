@@ -150,6 +150,7 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  p->stack_guard = 0;
 }
 
 // Create a user page table for a given process,
@@ -240,9 +241,12 @@ growproc(int n)
 {
   // uint sz;
   struct proc *p = myproc();
-
+  if ((n > 0 && p->sz + n > TRAPFRAME) || (n < 0 && -n > p->sz)) return -1;
+  if (n < 0) {
+    uint64 new_sz = PGROUNDUP(p->sz + n);
+    uvmunmap(p->pagetable, new_sz, (p->sz - new_sz)/PGSIZE, 1);
+  }
   p->sz += n;
-  p->sz = PGROUNDUP(p->sz);
   return 0;
   /*
   sz = p->sz;
@@ -299,6 +303,7 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+  np->stack_guard = p->stack_guard;
 
   release(&np->lock);
 
