@@ -21,12 +21,22 @@ struct run {
 struct {
   struct spinlock lock;
   struct run *freelist;
+  void *vm_start;             // the start of free memory.
+  uint8 rec_cnt[8 * PGSIZE];   // maintain the reference count of physical memory.
 } kmem;
+
+// compute the index of pm pages.
+int
+get_index(void* addr) {
+  return (PGROUNDDOWN((uint64)addr) - (uint64)kmem.vm_start) / PGSIZE;
+}
 
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  for (int i = 0; i < 8 * PGSIZE; ++i) kmem.rec_cnt[i] = 1;
+  kmem.vm_start = (void*)PGROUNDUP((uint64)end);
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -39,6 +49,17 @@ freerange(void *pa_start, void *pa_end)
     kfree(p);
 }
 
+// 增加对一个物理内存的引用
+void
+increase_reference(void *pa) {
+  acquire(&kmem.lock);
+  int idx = get_index(pa);
+  if (idx < 0 || idx >= 8 * PGSIZE || kmem.rec_cnt[idx] == 0)
+    panic("increase reference: error!, out of bound!");
+  ++kmem.rec_cnt[idx];
+  release(&kmem.lock);
+}
+
 // Free the page of physical memory pointed at by v,
 // which normally should have been returned by a
 // call to kalloc().  (The exception is when
@@ -46,17 +67,28 @@ freerange(void *pa_start, void *pa_end)
 void
 kfree(void *pa)
 {
-  struct run *r;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
+  acquire(&kmem.lock);
+
+  // 查看当前物理页的引用计数
+  int idx = get_index(pa);
+  if (idx < 0 || idx >= 8 * PGSIZE || kmem.rec_cnt[idx] == 0)
+    panic("real_kfree: error!");
+  --kmem.rec_cnt[idx];
+  // 引用计数不是零
+  if (kmem.rec_cnt[idx] != 0) {
+    release(&kmem.lock);
+    return;
+  }
+
+  struct run *r;
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
 
   r = (struct run*)pa;
-
-  acquire(&kmem.lock);
   r->next = kmem.freelist;
   kmem.freelist = r;
   release(&kmem.lock);
@@ -72,8 +104,12 @@ kalloc(void)
 
   acquire(&kmem.lock);
   r = kmem.freelist;
-  if(r)
+  if(r) {
     kmem.freelist = r->next;
+    ++kmem.rec_cnt[get_index(r)];
+    if (kmem.rec_cnt[get_index(r)] != 1)
+      panic("kalloc: the refcount shoule be 1!");
+  }
   release(&kmem.lock);
 
   if(r)

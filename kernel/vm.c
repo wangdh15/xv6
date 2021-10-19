@@ -121,6 +121,27 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+// 清除掉可写标志位
+pte_t
+clear_write(pte_t pte) {
+  return pte & (~PTE_W);
+}
+
+pte_t
+set_write(pte_t pte) {
+  return pte | PTE_W;
+}
+
+pte_t
+set_cow(pte_t pte) {
+  return pte | PTE_COW;
+}
+
+pte_t
+clear_cow(pte_t pte) {
+  return pte & (~PTE_COW);
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -131,7 +152,7 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
+
   pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
@@ -310,8 +331,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
-  char *mem;
+  // uint flags;
+  // char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -319,14 +340,16 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    int is_writable = (*pte) & PTE_R;
+    int is_cow = (*pte) & PTE_COW;
+    *pte = set_cow(*pte);
+    *pte = clear_write(*pte);
+    if (mappages(new, i, PGSIZE, pa, PTE_FLAGS(*pte)) != 0) {
+      if (!is_cow) *pte = clear_cow(*pte);
+      if (is_writable) *pte = set_write(*pte);
       goto err;
     }
+    increase_reference((void*)pa);  // 增加对物理页的引用计数
   }
   return 0;
 
@@ -341,12 +364,13 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("uvmclear");
   *pte &= ~PTE_U;
 }
+
 
 // Copy from kernel to user.
 // Copy len bytes from src to virtual address dstva in a given page table.
@@ -358,9 +382,39 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
+
+    pte_t *pte;
+    // uint64 pa;
+
+    if(va0 >= MAXVA)
       return -1;
+
+    pte = walk(pagetable, va0, 0);
+    if(pte == 0)
+      return -1;
+    if((*pte & PTE_V) == 0)
+      return -1;
+    if((*pte & PTE_U) == 0)
+      return -1;
+
+    if (*pte & PTE_COW) {
+      pa0 = (uint64)kalloc();
+      if (pa0 == 0) {
+        return -1;
+      }
+      memmove((void*)pa0, (void*)PTE2PA((uint64)*pte), PGSIZE);
+      kfree((void*)PTE2PA((uint64)*pte));
+      uint64 flag = PTE_FLAGS(*pte);
+      flag &= (~PTE_COW);
+      flag |= PTE_W;
+      *pte = PA2PTE(pa0) | flag;
+      // mappages(pagetable, va0, PGSIZE, pa0, flag);
+    } else {
+      pa0 = (uint64)PTE2PA(*pte);
+    }
+    // pa0 = walkaddr(pagetable, va0);
+    // if(pa0 == 0)
+    //   return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -439,4 +493,37 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+
+// 递归输出
+static
+void
+vmprint_recur(pagetable_t pagetable, int dep) {
+  int i, j;
+  for (i = 0; i < 512; ++i) {
+    pte_t pte = pagetable[i];
+    if ((pte & PTE_V)) {
+
+      // 格式
+      for (j = 0; j < dep; ++j) {
+        printf("..");
+        if (j != dep - 1) printf(" ");
+      }
+      printf("%d: pte %p pa %p\n", i, pte, PTE2PA(pte));
+
+      // 表明不是叶子节点，继续递归
+      if (dep < 3) {
+        uint64 child = PTE2PA(pte);
+        vmprint_recur((pagetable_t)child, dep + 1);
+      }
+    }
+  }
+}
+
+// 打印一个进程的pagetable的内容
+void
+vmprint(pagetable_t pagetable) {
+  printf("page table %p\n", pagetable);
+  vmprint_recur(pagetable, 1);
 }
