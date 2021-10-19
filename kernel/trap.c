@@ -70,17 +70,20 @@ usertrap(void)
     uint64 va = r_stval();
     pte_t *pte;
     if ((pte = walk(p->pagetable, va, 0)) == 0) {
-      printf("usertrap(): cow error!\n");
+      // printf("usertrap(): cow error!\n");
       p->killed = 1;
+      goto out;
     }
     if (((*pte) & PTE_COW) == 0) {
-      printf("usertrap(): cow error! 2\n");
+      // printf("usertrap(): cow error! 2\n");
       p->killed = 1;
+      goto out;
     }
     void* mem = kalloc();
     if (mem == 0) {
-      printf("usertrap(): no enough memory!\n");
+      // printf("usertrap(): no enough memory!\n");
       p->killed = 1;
+      goto out;
     }
     memmove(mem, (void*)PTE2PA((uint64)*pte), PGSIZE);
     uint64 flag = PTE_FLAGS(*pte);
@@ -97,6 +100,7 @@ usertrap(void)
     p->killed = 1;
   }
 
+out:
   if(p->killed)
     exit(-1);
 
