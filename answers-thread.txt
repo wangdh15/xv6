@@ -1,0 +1,1 @@
+the situation is add node to link list at the same time.
