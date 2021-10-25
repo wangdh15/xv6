@@ -330,6 +330,42 @@ sys_open(void)
     return -1;
   }
 
+  if (ip->type == T_SYMLINK) {
+    // 不继续查找符号链接的具体文件的inode
+    if (omode & O_NOFOLLOW)
+      f->ip = ip;
+    // 需要查找具体的文件内容，则进行递归地查找，如果查找地过深(10)，则直接返回失败。
+    else {
+      uint thresd = 10;
+      char path[MAXPATH];
+      int find = 0;
+      for (int i = 0; i < thresd; ++i) {
+        if (readi(ip, 0, (uint64)path, 0, MAXPATH) != MAXPATH)
+          panic("panic: open, donnot read enough content!");
+        iunlockput(ip);
+        if((ip = namei(path)) == 0){
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+        if (ip->type != T_SYMLINK) {
+          f->ip = ip;
+          find = 1;
+          break;
+        }
+      }
+      if (!find) {
+        if (f) fileclose(f);
+        myproc()->ofile[fd] = 0;
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+  } else {
+    f->ip = ip;
+  }
+
   if(ip->type == T_DEVICE){
     f->type = FD_DEVICE;
     f->major = ip->major;
@@ -337,7 +373,7 @@ sys_open(void)
     f->type = FD_INODE;
     f->off = 0;
   }
-  f->ip = ip;
+
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
@@ -393,7 +429,7 @@ sys_chdir(void)
   char path[MAXPATH];
   struct inode *ip;
   struct proc *p = myproc();
-  
+
   begin_op();
   if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
     end_op();
@@ -482,5 +518,76 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+// 查找对应path的文件inode
+// 如果已经存在了，就返回false，
+// 否则的话，返回true，并将创建的新的返回
+uint
+find_file(char *path, short type, short major, short minor, struct inode** ans)
+{
+  struct inode *ip, *dp;
+  char name[DIRSIZ];
+
+  // 父目录没有
+  if((dp = nameiparent(path, name)) == 0)
+    return -1;
+
+  ilock(dp);
+  // 父目录已经存在对应的文件
+  if((ip = dirlookup(dp, name, 0)) != 0){
+    iunlockput(dp);
+    return -1;
+  }
+
+  // 没找到文件，分配新的inode
+  if((ip = ialloc(dp->dev, type)) == 0)
+    panic("create: ialloc");
+
+  ilock(ip);
+  ip->major = major;
+  ip->minor = minor;
+  ip->nlink = 1;
+  iupdate(ip);
+
+  // 将新的inode放到其对应的目录下
+  if(dirlink(dp, name, ip->inum) < 0)
+    panic("create: dirlink");
+
+  iunlockput(dp);
+  *ans = ip;
+
+  return 0;
+}
+
+
+// 创建新的符号链接
+uint64
+sys_symlink(void) {
+  char new[MAXPATH], old[MAXPATH];
+  struct inode *ip;
+
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+
+  // 找到了同名的文件返回-1，
+  // 否则就创建新的文件，并将值存在ip中
+  // 返回的时候ip是持有lock的
+  if (find_file(new, T_SYMLINK, 1, 1, &ip) != 0) {
+    end_op();
+    return -1;
+  }
+
+  // 将对应的路径填写到symlink的inode的data中
+  if (writei(ip, 0, (uint64)old, 0, MAXPATH) != MAXPATH)
+    panic("panic: symlink no write enough content!");
+
+  // 将ip解锁并放回
+  iunlockput(ip);
+
+  end_op();
   return 0;
 }
