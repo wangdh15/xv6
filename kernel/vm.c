@@ -5,6 +5,12 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
+#include "proc.h"
+
 
 /*
  * the kernel's page table.
@@ -45,7 +51,7 @@ kvmmake(void)
 
   // map kernel stacks
   proc_mapstacks(kpgtbl);
-  
+
   return kpgtbl;
 }
 
@@ -330,7 +336,7 @@ void
 uvmclear(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
-  
+
   pte = walk(pagetable, va, 0);
   if(pte == 0)
     panic("uvmclear");
@@ -428,4 +434,67 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+munmap(  uint64 addr_src, int length) {
+  struct vma *pvma = 0;
+  struct proc *p = myproc();
+
+  if (addr_src < p->sz) {
+    printf("sys_unmap: unmap illegal address!\n");
+    return -1;
+  }
+
+  // 查找包含对应映射关系的VAM
+  for (int i = 0; i < NVMA; ++i) {
+    if (p->vmas[i].f != 0 && p->vmas[i].addr_src <= addr_src && p->vmas[i].addr_src + p->vmas[i].length >= addr_src + length) {
+      pvma = &p->vmas[i];
+      break;
+    }
+  }
+  // 如果没有找到，则直接返回错误
+  if (pvma == 0) {
+    printf("sys_munmap: don't find the VAM!\n");
+    return -1;
+  }
+
+  uint64 begin_addr = PGROUNDUP(addr_src);
+  uint64 end_addr = PGROUNDDOWN(addr_src + length);
+
+  pte_t *pte;
+  // 将存在的也给写回文件并从页表中去除
+  for(uint64 a = begin_addr; a < end_addr; a += PGSIZE){
+    if((pte = walk(p->pagetable, a, 0)) == 0)
+      continue;
+    if((*pte & PTE_V) == 0)
+      continue;
+    if(PTE_FLAGS(*pte) == PTE_V)
+      continue;
+    uint64 pa = PTE2PA(*pte);
+    // 如果是shared模式，就将内存中的内容写入到文件中
+    if (pvma->flags & MAP_SHARED) {
+      begin_op();
+      ilock(pvma->f->ip);
+      writei(pvma->f->ip, 0, pa, a - pvma->addr_src + pvma->offset, PGSIZE);
+      iunlock(pvma->f->ip);
+      end_op();
+    }
+    // 释放对应的物理内存
+    kfree((void*)pa);
+    *pte = 0;
+  }
+
+  // 维护新的VMA的信息
+  pvma->offset += end_addr - begin_addr;
+  pvma->length -= end_addr - begin_addr;
+  pvma->addr_src = end_addr;
+  // 清空整个pvma的内容
+  if (pvma->length == 0) {
+    fileclose(pvma->f);
+    pvma -> f = 0;
+    pvma -> addr_src = 0;
+    pvma -> offset = 0;
+  }
+  return 0;
 }

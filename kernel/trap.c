@@ -3,8 +3,12 @@
 #include "memlayout.h"
 #include "riscv.h"
 #include "spinlock.h"
+#include "sleeplock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -37,6 +41,7 @@ void
 usertrap(void)
 {
   int which_dev = 0;
+  uint64 cause;
 
   if((r_sstatus() & SSTATUS_SPP) != 0)
     panic("usertrap: not from user mode");
@@ -46,11 +51,13 @@ usertrap(void)
   w_stvec((uint64)kernelvec);
 
   struct proc *p = myproc();
-  
+
   // save user program counter.
   p->trapframe->epc = r_sepc();
-  
-  if(r_scause() == 8){
+
+  cause = r_scause();
+
+  if(cause == 8){
     // system call
 
     if(p->killed)
@@ -65,6 +72,71 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if (cause == 0xc ||  cause == 0xd || cause == 0xf) {
+    // 查看所有的vma，看看是否在某个的范围内
+    uint64 page_fault_addr = r_stval();
+
+    // 访问sz内的地址出错，则直接kill即可
+    if (page_fault_addr < p->sz) {
+      p->killed = 1;
+      goto end;
+    }
+
+    struct vma *pvma = 0;
+    for (int i = 0; i < NVMA; ++i) {
+      if (p->vmas[i].f != 0) {
+        if (page_fault_addr >= p->vmas[i].addr_src && page_fault_addr < p->vmas[i].addr_src + p->vmas[i].length) {
+          pvma = &p->vmas[i];
+          break;
+        }
+      }
+    }
+
+    if (pvma == 0) {
+      // 没找到对应的vma，则将当前进程杀死
+      p->killed = 1;
+      goto end;
+    }
+    // 查看权限是否满足
+    // 0xc 表示 instruction page fault
+    // 0xd 表示 load page fault
+    // 0xf 表示 store page fault
+    // 如果在已经分配好的页上非法访问，会直接在这个地方退出
+    if ( (cause == 0xc && (pvma->prot & PROT_EXEC) == 0) ||
+         (cause == 0xd && (pvma->prot & PROT_READ) == 0) ||
+         (cause == 0xf && (pvma->prot & PROT_WRITE) == 0)) {
+          p->killed = 1;
+          goto end;
+    }
+
+    // 分配物理内存
+    page_fault_addr = PGROUNDDOWN(page_fault_addr);
+    void* pm = kalloc();
+    if (pm == 0) {
+      p->killed = 1;
+      goto end;
+    }
+    memset(pm, 0, PGSIZE);
+
+    // 从文件中读取对应的内容到内存中
+    uint64 file_offset = (page_fault_addr - pvma->addr_src) + pvma->offset;
+    ilock(pvma->f->ip);
+    if (readi(pvma->f->ip, 0, (uint64)pm, file_offset, PGSIZE) < 0) {
+      iunlock(pvma->f->ip);
+      kfree(pm);
+      p->killed = 1;
+      goto end;
+    }
+
+    iunlock(pvma->f->ip);
+
+    // 将物理内存映射到页表中
+    if (mappages(p->pagetable, page_fault_addr, PGSIZE, (uint64)pm, (pvma->prot << 1) | PTE_U) < 0) {
+      kfree(pm);
+      p->killed = 1;
+      goto end;
+    }
+
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
@@ -72,6 +144,8 @@ usertrap(void)
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;
   }
+
+end:
 
   if(p->killed)
     exit(-1);
@@ -108,7 +182,7 @@ usertrapret(void)
 
   // set up the registers that trampoline.S's sret will use
   // to get to user space.
-  
+
   // set S Previous Privilege mode to User.
   unsigned long x = r_sstatus();
   x &= ~SSTATUS_SPP; // clear SPP to 0 for user mode
@@ -121,7 +195,7 @@ usertrapret(void)
   // tell trampoline.S the user page table to switch to.
   uint64 satp = MAKE_SATP(p->pagetable);
 
-  // jump to trampoline.S at the top of memory, which 
+  // jump to trampoline.S at the top of memory, which
   // switches to the user page table, restores user registers,
   // and switches to user mode with sret.
   uint64 fn = TRAMPOLINE + (userret - trampoline);
@@ -130,14 +204,14 @@ usertrapret(void)
 
 // interrupts and exceptions from kernel code go here via kernelvec,
 // on whatever the current kernel stack is.
-void 
+void
 kerneltrap()
 {
   int which_dev = 0;
   uint64 sepc = r_sepc();
   uint64 sstatus = r_sstatus();
   uint64 scause = r_scause();
-  
+
   if((sstatus & SSTATUS_SPP) == 0)
     panic("kerneltrap: not from supervisor mode");
   if(intr_get() != 0)
@@ -207,7 +281,7 @@ devintr()
     if(cpuid() == 0){
       clockintr();
     }
-    
+
     // acknowledge the software interrupt by clearing
     // the SSIP bit in sip.
     w_sip(r_sip() & ~2);

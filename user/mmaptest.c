@@ -118,7 +118,7 @@ mmap_test(void)
     err("munmap (1)");
 
   printf("test mmap f: OK\n");
-    
+
   printf("test mmap private\n");
   // should be able to map file opened read-only with private writable
   // mapping
@@ -134,9 +134,9 @@ mmap_test(void)
     err("munmap (2)");
 
   printf("test mmap private: OK\n");
-    
+
   printf("test mmap read-only\n");
-    
+
   // check that mmap doesn't allow read/write mapping of a
   // file opened read-only.
   if ((fd = open(f, O_RDONLY)) == -1)
@@ -148,9 +148,9 @@ mmap_test(void)
     err("close");
 
   printf("test mmap read-only: OK\n");
-    
+
   printf("test mmap read/write\n");
-  
+
   // check that mmap does allow read/write mapping of a
   // file opened read/write.
   if ((fd = open(f, O_RDWR)) == -1)
@@ -171,11 +171,11 @@ mmap_test(void)
   // unmap just the first two of three pages of mapped memory.
   if (munmap(p, PGSIZE*2) == -1)
     err("munmap (3)");
-  
+
   printf("test mmap read/write: OK\n");
-  
+
   printf("test mmap dirty\n");
-  
+
   // check that the writes to the mapped memory were
   // written to the file.
   if ((fd = open(f, O_RDWR)) == -1)
@@ -193,15 +193,15 @@ mmap_test(void)
   printf("test mmap dirty: OK\n");
 
   printf("test not-mapped unmap\n");
-  
+
   // unmap the rest of the mapped memory.
   if (munmap(p+PGSIZE*2, PGSIZE) == -1)
     err("munmap (4)");
 
   printf("test not-mapped unmap: OK\n");
-    
+
   printf("test mmap two files\n");
-  
+
   //
   // mmap two files at the same time.
   //
@@ -236,9 +236,9 @@ mmap_test(void)
   if(memcmp(p2, "67890", 5) != 0)
     err("mmap2 mismatch (2)");
   munmap(p2, PGSIZE);
-  
+
   printf("test mmap two files: OK\n");
-  
+
   printf("mmap_test: ALL OK\n");
 }
 
@@ -252,10 +252,10 @@ fork_test(void)
   int fd;
   int pid;
   const char * const f = "mmap.dur";
-  
+
   printf("fork_test starting\n");
   testname = "fork_test";
-  
+
   // mmap the file twice.
   makefile(f);
   if ((fd = open(f, O_RDONLY)) == -1)
