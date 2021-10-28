@@ -75,10 +75,6 @@ install_trans(int recovering)
     struct buf *dbuf = bread(log.dev, log.lh.block[tail]); // read dst
     memmove(dbuf->data, lbuf->data, BSIZE);  // copy block to dst
     bwrite(dbuf);  // write dst to disk
-    // 因为如果不是recovering的话，在log_write
-    // 的时候为了让写的内容保持在内存中，会对缓存执行
-    // pin操作，所以这里写完之后需要unpin，让其能够
-    // 被剔除，不然之前写的内容会在被写到磁盘之前被剔除
     if(recovering == 0)
       bunpin(dbuf);
     brelse(lbuf);
@@ -194,14 +190,6 @@ write_log(void)
   }
 }
 
-/*
-commit的流程：
-1. 将缓存中对数据的修改写入到log的部分（write_log）
-2. 将head的信息写入到磁盘上（write_head）。这部分完成之后，才算将所有的修改提交完成
-3. 将当前事务中的修改放到其对应的位置，（install_trans）
-4. 在内存修改log的头的信息，(log.lh.n = 0)
-5. 将log的头写入磁盘，(write_head)，该步完成之后算是将所有修改持久化到了磁盘，并清空了log。
-*/
 static void
 commit()
 {
